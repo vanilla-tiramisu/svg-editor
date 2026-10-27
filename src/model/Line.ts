@@ -17,6 +17,10 @@ export class Line extends Shape {
 
   get type(): string { return 'line'; }
 
+  creationAttributes(): { required: string[]; optional: string[] } {
+    return { required: this.geometryAttributes(), optional: ['stroke'] };
+  }
+
   move(dx: number, dy: number): void {
     this._x1 += dx;
     this._y1 += dy;
@@ -46,6 +50,7 @@ export class Line extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     if (this.setCommonAttribute(name, value)) return;
     switch (name) {
       case 'x1': this._x1 = Number(value); break;
@@ -79,7 +84,7 @@ export class Line extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<line id="${this.id}" x1="${this._x1}" y1="${this._y1}" x2="${this._x2}" y2="${this._y2}"`;
+    let s = `${indent}<line id="${this.svgId()}" x1="${this._x1}" y1="${this._y1}" x2="${this._x2}" y2="${this._y2}"`;
     s += this.commonSvgAttrs();
     s += '/>';
     return s;

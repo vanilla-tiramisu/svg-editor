@@ -9,6 +9,10 @@ export class Group extends Shape {
 
   get type(): string { return 'g'; }
 
+  creationAttributes(): { required: string[]; optional: string[] } {
+    return { required: [], optional: [] };
+  }
+
   get children(): ReadonlyArray<Shape> {
     return this._children;
   }
@@ -17,12 +21,21 @@ export class Group extends Shape {
     return true;
   }
 
+  assertCanContain(shape: Shape): void {
+    if (shape === this || (shape.isGroup() && shape.containsDescendant(this))) {
+      throw new Error(`cannot move a container into itself or its descendant: ${shape.id}`);
+    }
+  }
+
   addChild(shape: Shape): void {
-    this._children.push(shape);
-    shape.parent = this;
+    this.addChildAt(shape, this._children.length);
   }
 
   addChildAt(shape: Shape, index: number): void {
+    this.assertCanContain(shape);
+    if (shape.parent || this._children.includes(shape)) {
+      throw new Error(`shape already has a parent: ${shape.id}`);
+    }
     this._children.splice(index, 0, shape);
     shape.parent = this;
   }
@@ -96,6 +109,7 @@ export class Group extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     this.setCommonAttribute(name, value);
   }
 
@@ -118,7 +132,7 @@ export class Group extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<g id="${this.id}"`;
+    let s = `${indent}<g id="${this.svgId()}"`;
     s += this.commonSvgAttrs();
     s += '>\n';
     for (const child of this._children) {

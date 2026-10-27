@@ -44,6 +44,7 @@ export class Ellipse extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     if (this.setCommonAttribute(name, value)) return;
     switch (name) {
       case 'cx': this._cx = Number(value); break;
@@ -77,7 +78,7 @@ export class Ellipse extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<ellipse id="${this.id}" cx="${this._cx}" cy="${this._cy}" rx="${this._rx}" ry="${this._ry}"`;
+    let s = `${indent}<ellipse id="${this.svgId()}" cx="${this._cx}" cy="${this._cy}" rx="${this._rx}" ry="${this._ry}"`;
     s += this.commonSvgAttrs();
     s += '/>';
     return s;

@@ -1,4 +1,5 @@
 import { Shape } from './Shape';
+import { SvgValue } from './SvgValue';
 
 export class TextShape extends Shape {
   private _x: number;
@@ -13,6 +14,10 @@ export class TextShape extends Shape {
   }
 
   get type(): string { return 'text'; }
+
+  creationAttributes(): { required: string[]; optional: string[] } {
+    return { required: [...this.geometryAttributes(), 'text'], optional: [] };
+  }
 
   get x(): number { return this._x; }
   get y(): number { return this._y; }
@@ -42,6 +47,7 @@ export class TextShape extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     if (this.setCommonAttribute(name, value)) return;
     switch (name) {
       case 'x': this._x = Number(value); break;
@@ -74,13 +80,9 @@ export class TextShape extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<text id="${this.id}" x="${this._x}" y="${this._y}"`;
+    let s = `${indent}<text id="${this.svgId()}" x="${this._x}" y="${this._y}"`;
     s += this.commonSvgAttrs();
-    s += `>${this.escapeXml(this._content)}</text>`;
+    s += `>${SvgValue.escape(this._content)}</text>`;
     return s;
-  }
-
-  private escapeXml(s: string): string {
-    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 }

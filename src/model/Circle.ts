@@ -44,6 +44,7 @@ export class Circle extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     if (this.setCommonAttribute(name, value)) return;
     switch (name) {
       case 'cx': this._cx = Number(value); break;
@@ -76,7 +77,7 @@ export class Circle extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<circle id="${this.id}" cx="${this._cx}" cy="${this._cy}" r="${this._r}"`;
+    let s = `${indent}<circle id="${this.svgId()}" cx="${this._cx}" cy="${this._cy}" r="${this._r}"`;
     s += this.commonSvgAttrs();
     s += '/>';
     return s;

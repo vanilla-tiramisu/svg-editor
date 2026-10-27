@@ -7,6 +7,7 @@ export class CommandHistory {
 
   execute(cmd: Command): string {
     const result = cmd.execute();
+    if (result.startsWith('error:')) return result;
     this._undoStack.push(cmd);
     this._redoStack = [];
     this._ioBlocked = false;
@@ -20,8 +21,10 @@ export class CommandHistory {
     if (this._undoStack.length === 0) {
       return 'error: nothing to undo';
     }
-    const cmd = this._undoStack.pop()!;
+    const cmd = this._undoStack[this._undoStack.length - 1];
     const result = cmd.undo();
+    if (result.startsWith('error:')) return result;
+    this._undoStack.pop();
     this._redoStack.push(cmd);
     return result;
   }
@@ -33,8 +36,10 @@ export class CommandHistory {
     if (this._redoStack.length === 0) {
       return 'error: nothing to redo';
     }
-    const cmd = this._redoStack.pop()!;
+    const cmd = this._redoStack[this._redoStack.length - 1];
     const result = cmd.execute();
+    if (result.startsWith('error:')) return result;
+    this._redoStack.pop();
     this._undoStack.push(cmd);
     return result;
   }

@@ -22,8 +22,11 @@ export class SetCommand implements Command {
   undo(): string {
     if (this.oldValue !== undefined) {
       this.shape.setAttribute(this.attr, this.oldValue);
+    } else {
+      this.shape.removeAttribute(this.attr);
     }
-    return `${this.shape.type}#${this.shape.id} updated: ${this.attr}=${this.formatValue(this.oldValue ?? '')}`;
+    const value = this.oldValue === undefined ? '(unset)' : this.formatValue(this.oldValue);
+    return `${this.shape.type}#${this.shape.id} updated: ${this.attr}=${value}`;
   }
 
   private formatValue(val: string): string {

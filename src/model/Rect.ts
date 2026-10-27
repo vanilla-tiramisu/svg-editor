@@ -49,6 +49,7 @@ export class Rect extends Shape {
   }
 
   setAttribute(name: string, value: string): void {
+    this.validateAttribute(name, value);
     if (this.setCommonAttribute(name, value)) return;
     switch (name) {
       case 'x': this._x = Number(value); break;
@@ -82,7 +83,7 @@ export class Rect extends Shape {
   }
 
   toSvgElement(indent: string): string {
-    let s = `${indent}<rect id="${this.id}" x="${this._x}" y="${this._y}" width="${this._width}" height="${this._height}"`;
+    let s = `${indent}<rect id="${this.svgId()}" x="${this._x}" y="${this._y}" width="${this._width}" height="${this._height}"`;
     s += this.commonSvgAttrs();
     s += '/>';
     return s;

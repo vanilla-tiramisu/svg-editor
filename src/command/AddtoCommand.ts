@@ -17,6 +17,7 @@ export class AddtoCommand implements Command {
   }
 
   execute(): string {
+    this.targetGroup.assertCanContain(this.shape);
     const { parent, index } = this.doc.removeFromParent(this.shape);
     this.oldParent = parent;
     this.oldIndex = index;

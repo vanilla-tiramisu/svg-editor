@@ -1,13 +1,9 @@
 import { SvgDocument } from '../model/SvgDocument';
 import { Shape } from '../model/Shape';
 import { Group } from '../model/Group';
-import { Rect } from '../model/Rect';
-import { Circle } from '../model/Circle';
-import { Ellipse } from '../model/Ellipse';
-import { Line } from '../model/Line';
-import { TextShape } from '../model/TextShape';
+import { ShapeFactory } from '../model/ShapeFactory';
+import { SvgValue } from '../model/SvgValue';
 import { CommandHistory } from '../command/CommandHistory';
-import { Command } from '../command/Command';
 import { CreateCommand } from '../command/CreateCommand';
 import { DeleteCommand } from '../command/DeleteCommand';
 import { MoveCommand } from '../command/MoveCommand';
@@ -19,6 +15,7 @@ import { AddtoCommand } from '../command/AddtoCommand';
 import { FrontCommand } from '../command/FrontCommand';
 import { BackCommand } from '../command/BackCommand';
 import { CommandParser } from '../parser/CommandParser';
+import { CommandToken } from '../parser/CommandToken';
 import { SvgSerializer } from '../io/SvgSerializer';
 import { SvgReader } from '../io/SvgReader';
 
@@ -29,21 +26,31 @@ export class Editor {
   private serializer: SvgSerializer = new SvgSerializer();
   private reader: SvgReader = new SvgReader();
 
-  private static KNOWN_TYPES = new Set(['rect', 'circle', 'ellipse', 'line', 'text', 'g']);
+  private factory: ShapeFactory = new ShapeFactory();
 
   handleLine(line: string): string | null {
+    try {
+      const result = this.dispatch(line);
+      return result?.startsWith('error:') ? result.replace(/[\r\n]+/g, ' ') : result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return `error: ${message.replace(/[\r\n]+/g, ' ')}`;
+    }
+  }
+
+  private dispatch(line: string): string | null {
     const tokens = this.parser.parse(line);
     if (!tokens) return null;
 
-    const cmd = tokens[0];
-    const args = tokens.slice(1);
+    const cmd = tokens[0].value;
+    const args = tokens.slice(1).map(token => token.value);
 
     switch (cmd) {
       case 'init': return this.handleInit(args);
       case 'read': return this.handleRead(args);
       case 'save': return this.handleSave(args);
       case 'canvas': return this.handleCanvas(args);
-      case 'create': return this.handleCreate(args);
+      case 'create': return this.handleCreate(args, tokens.slice(3));
       case 'delete': return this.handleDelete(args);
       case 'move': return this.handleMove(args);
       case 'scale': return this.handleScale(args);
@@ -55,9 +62,16 @@ export class Editor {
       case 'back': return this.handleBack(args);
       case 'tree': return this.handleTree(args);
       case 'show': return this.handleShow(args);
-      case 'help': return this.handleHelp();
-      case 'undo': return this.history.undo();
-      case 'redo': return this.history.redo();
+      case 'help':
+        this.checkArgs(args, 0, 0, 'help');
+        return this.handleHelp();
+      case 'undo':
+      case 'redo': {
+        this.checkArgs(args, 0, 0, cmd);
+        const doc = this.requireDoc();
+        if (typeof doc === 'string') return doc;
+        return cmd === 'undo' ? this.history.undo() : this.history.redo();
+      }
       default: return `error: unknown command: ${cmd}`;
     }
   }
@@ -67,9 +81,14 @@ export class Editor {
     return this.doc;
   }
 
+  private checkArgs(args: string[], min: number, max: number, syntax: string): void {
+    if (args.length < min || args.length > max) throw new Error(`usage: ${syntax}`);
+  }
+
   private handleInit(args: string[]): string {
-    const w = args.length > 0 ? Number(args[0]) : 800;
-    const h = args.length > 1 ? Number(args[1]) : 600;
+    this.checkArgs(args, 0, 2, 'init [w] [h]');
+    const w = SvgValue.positive(args[0] ?? 800, 'canvas width');
+    const h = SvgValue.positive(args[1] ?? 600, 'canvas height');
     this.doc = new SvgDocument(w, h);
     this.history.clear();
     this.history.markIoBlocked();
@@ -77,7 +96,7 @@ export class Editor {
   }
 
   private handleRead(args: string[]): string {
-    if (args.length < 1) return 'error: usage: read <file.svg>';
+    this.checkArgs(args, 1, 1, 'read <file.svg>');
     const filePath = args[0];
     const result = this.reader.read(filePath);
     if (typeof result === 'string') return result;
@@ -95,15 +114,18 @@ export class Editor {
   }
 
   private handleSave(args: string[]): string {
+    this.checkArgs(args, 0, 1, 'save [file.svg]');
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    let filePath = args.length > 0 ? args[0] : docOrErr.filePath;
+    const filePath = args.length > 0 ? args[0] : docOrErr.filePath;
     if (!filePath) return 'error: no file path specified';
 
+    const result = this.serializer.save(docOrErr, filePath);
+    if (result.startsWith('error:')) return result;
     docOrErr.filePath = filePath;
     this.history.markIoBlocked();
-    return this.serializer.save(docOrErr, filePath);
+    return result;
   }
 
   private handleCanvas(args: string[]): string {
@@ -113,13 +135,16 @@ export class Editor {
     if (args.length === 0) {
       return `canvas ${docOrErr.width}x${docOrErr.height}`;
     }
-    docOrErr.width = Number(args[0]);
-    if (args.length > 1) docOrErr.height = Number(args[1]);
+    this.checkArgs(args, 1, 2, 'canvas [w] [h]');
+    const width = SvgValue.positive(args[0], 'canvas width');
+    const height = SvgValue.positive(args[1] ?? docOrErr.height, 'canvas height');
+    docOrErr.width = width;
+    docOrErr.height = height;
     this.history.markIoBlocked();
     return `canvas ${docOrErr.width}x${docOrErr.height}`;
   }
 
-  private handleCreate(args: string[]): string {
+  private handleCreate(args: string[], parameterTokens: CommandToken[]): string {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
@@ -127,17 +152,11 @@ export class Editor {
 
     const type = args[0];
     const id = args[1];
-    const rest = args.slice(2);
-
-    if (!Editor.KNOWN_TYPES.has(type)) {
-      return `error: unknown shape type: ${type} (is the plugin loaded?)`;
-    }
-
     if (docOrErr.hasId(id)) {
       return `error: id already exists: ${id}`;
     }
 
-    const { params, containerId } = this.parser.extractInClause(rest);
+    const { params, containerId } = this.parser.extractInClause(parameterTokens);
 
     let container: Group | null = null;
     if (containerId) {
@@ -147,52 +166,17 @@ export class Editor {
       container = containerShape;
     }
 
-    const shape = this.createShape(type, id, params);
-    if (typeof shape === 'string') return shape;
+    const shape = this.factory.createFromArgs(type, id, params);
 
     const cmd = new CreateCommand(docOrErr, shape, container);
     return this.history.execute(cmd);
-  }
-
-  private createShape(type: string, id: string, params: string[]): Shape | string {
-    switch (type) {
-      case 'rect': {
-        if (params.length < 4) return 'error: usage: create rect <id> <x> <y> <w> <h> [fill]';
-        const fill = params.length > 4 ? params[4] : undefined;
-        return new Rect(id, Number(params[0]), Number(params[1]), Number(params[2]), Number(params[3]), fill);
-      }
-      case 'circle': {
-        if (params.length < 3) return 'error: usage: create circle <id> <cx> <cy> <r> [fill]';
-        const fill = params.length > 3 ? params[3] : undefined;
-        return new Circle(id, Number(params[0]), Number(params[1]), Number(params[2]), fill);
-      }
-      case 'ellipse': {
-        if (params.length < 4) return 'error: usage: create ellipse <id> <cx> <cy> <rx> <ry> [fill]';
-        const fill = params.length > 4 ? params[4] : undefined;
-        return new Ellipse(id, Number(params[0]), Number(params[1]), Number(params[2]), Number(params[3]), fill);
-      }
-      case 'line': {
-        if (params.length < 4) return 'error: usage: create line <id> <x1> <y1> <x2> <y2> [stroke]';
-        const stroke = params.length > 4 ? params[4] : undefined;
-        return new Line(id, Number(params[0]), Number(params[1]), Number(params[2]), Number(params[3]), stroke);
-      }
-      case 'text': {
-        if (params.length < 3) return 'error: usage: create text <id> <x> <y> "content"';
-        return new TextShape(id, Number(params[0]), Number(params[1]), params[2]);
-      }
-      case 'g': {
-        return new Group(id);
-      }
-      default:
-        return `error: unknown shape type: ${type} (is the plugin loaded?)`;
-    }
   }
 
   private handleDelete(args: string[]): string {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 1) return 'error: usage: delete <id>';
+    this.checkArgs(args, 1, 1, 'delete <id>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
@@ -204,11 +188,11 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 3) return 'error: usage: move <id> <dx> <dy>';
+    this.checkArgs(args, 3, 3, 'move <id> <dx> <dy>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
-    const cmd = new MoveCommand(shape, Number(args[1]), Number(args[2]));
+    const cmd = new MoveCommand(shape, SvgValue.number(args[1], 'dx'), SvgValue.number(args[2], 'dy'));
     return this.history.execute(cmd);
   }
 
@@ -216,12 +200,11 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 2) return 'error: usage: scale <id> <factor>';
+    this.checkArgs(args, 2, 2, 'scale <id> <factor>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
-    const factor = Number(args[1]);
-    if (factor <= 0) return 'error: scale factor must be positive';
+    const factor = SvgValue.positive(args[1], 'scale factor');
 
     const cmd = new ScaleCommand(shape, factor);
     return this.history.execute(cmd);
@@ -231,12 +214,12 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 3) return 'error: usage: set <id> <attr> <value>';
+    this.checkArgs(args, 3, 3, 'set <id> <attr> <value>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
     const attr = args[1];
-    const value = args.slice(2).join(' ');
+    const value = args[2];
 
     if (!shape.allowedAttributes().includes(attr)) {
       return `error: unknown attribute: ${attr}`;
@@ -280,7 +263,7 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 1) return 'error: usage: ungroup <gid>';
+    this.checkArgs(args, 1, 1, 'ungroup <gid>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
     if (!shape.isGroup()) return `error: not a container: ${args[0]}`;
@@ -297,7 +280,7 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 2) return 'error: usage: addto <gid> <id>';
+    this.checkArgs(args, 2, 2, 'addto <gid> <id>');
     const container = docOrErr.findById(args[0]);
     if (!container) return `error: no such container: ${args[0]}`;
     if (!container.isGroup()) return `error: not a container: ${args[0]}`;
@@ -313,7 +296,7 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 1) return 'error: usage: front <id>';
+    this.checkArgs(args, 1, 1, 'front <id>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
@@ -325,7 +308,7 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 1) return 'error: usage: back <id>';
+    this.checkArgs(args, 1, 1, 'back <id>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 
@@ -334,6 +317,7 @@ export class Editor {
   }
 
   private handleTree(args: string[]): string {
+    this.checkArgs(args, 0, 1, 'tree [id]');
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
@@ -344,7 +328,7 @@ export class Editor {
     const docOrErr = this.requireDoc();
     if (typeof docOrErr === 'string') return docOrErr;
 
-    if (args.length < 1) return 'error: usage: show <id>';
+    this.checkArgs(args, 1, 1, 'show <id>');
     const shape = docOrErr.findById(args[0]);
     if (!shape) return `error: no such shape: ${args[0]}`;
 

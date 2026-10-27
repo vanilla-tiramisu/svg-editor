@@ -4,16 +4,19 @@
   "description": "SVG Editor CLI — Phase 1",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "cli": "ts-node src/index.ts",
-    "start": "ts-node src/index.ts"
+    "build": "node node_modules/typescript/bin/tsc",
+    "check": "node node_modules/typescript/bin/tsc --noEmit",
+    "test": "node --test --require ts-node/register tests/Editor.test.cjs",
+    "cli": "node -r ts-node/register src/index.ts",
+    "start": "node -r ts-node/register src/index.ts"
   },
   "dependencies": {
-    "@xmldom/xmldom": "^0.8.10"
+    "@xmldom/xmldom": "^0.8.10",
+    "saxes": "^6.0.0"
   },
   "devDependencies": {
-    "typescript": "^5.3.0",
+    "@types/node": "^20.10.0",
     "ts-node": "^10.9.2",
-    "@types/node": "^20.10.0"
+    "typescript": "^5.3.0"
   }
 }

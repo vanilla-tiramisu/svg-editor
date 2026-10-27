@@ -1,9 +1,12 @@
-import { Group } from './Group';
+import type { Group } from './Group';
+import { SvgValue } from './SvgValue';
 
 export abstract class Shape {
   private _parent: Group | null = null;
 
-  constructor(protected _id: string) {}
+  constructor(protected _id: string) {
+    SvgValue.id(_id);
+  }
 
   get id(): string {
     return this._id;
@@ -37,6 +40,39 @@ export abstract class Shape {
 
   abstract positionLabel(): string;
 
+  creationAttributes(): { required: string[]; optional: string[] } {
+    return { required: this.geometryAttributes(), optional: ['fill'] };
+  }
+
+  geometryAttributes(): string[] {
+    return this.allowedAttributes().filter(name => !this.commonAllowed().includes(name) && name !== 'text');
+  }
+
+  validateAttribute(name: string, value: string): void {
+    if (!this.allowedAttributes().includes(name)) throw new Error(`unknown attribute: ${name}`);
+    SvgValue.text(value);
+    if (this.geometryAttributes().includes(name) || name === 'stroke-width') {
+      const nonnegative = ['width', 'height', 'r', 'rx', 'ry', 'stroke-width'].includes(name);
+      SvgValue.number(value, name, nonnegative ? 0 : undefined);
+    }
+  }
+
+  validate(): void {
+    for (const name of this.allowedAttributes()) {
+      const value = this.getAttribute(name);
+      if (value !== undefined) this.validateAttribute(name, value);
+    }
+  }
+
+  removeAttribute(name: string): void {
+    if (!this.commonAllowed().includes(name)) throw new Error(`cannot remove attribute: ${name}`);
+    this.setCommonAttribute(name, undefined);
+  }
+
+  protected svgId(): string {
+    return SvgValue.escape(this.id);
+  }
+
   isGroup(): this is Group {
     return false;
   }
@@ -69,7 +105,7 @@ export abstract class Shape {
     }
   }
 
-  protected setCommonAttribute(name: string, value: string): boolean {
+  protected setCommonAttribute(name: string, value: string | undefined): boolean {
     switch (name) {
       case 'fill': this._fill = value; return true;
       case 'stroke': this._stroke = value; return true;
@@ -80,9 +116,9 @@ export abstract class Shape {
 
   protected commonSvgAttrs(): string {
     let s = '';
-    if (this._fill !== undefined) s += ` fill="${this._fill}"`;
-    if (this._stroke !== undefined) s += ` stroke="${this._stroke}"`;
-    if (this._strokeWidth !== undefined) s += ` stroke-width="${this._strokeWidth}"`;
+    if (this._fill !== undefined) s += ` fill="${SvgValue.escape(this._fill)}"`;
+    if (this._stroke !== undefined) s += ` stroke="${SvgValue.escape(this._stroke)}"`;
+    if (this._strokeWidth !== undefined) s += ` stroke-width="${SvgValue.escape(this._strokeWidth)}"`;
     return s;
   }
 

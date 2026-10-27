@@ -1,5 +1,6 @@
 import { Shape } from './Shape';
 import { Group } from './Group';
+import { SvgValue } from './SvgValue';
 
 export class SvgDocument {
   private _width: number;
@@ -9,8 +10,8 @@ export class SvgDocument {
   private _filePath: string | null = null;
 
   constructor(width: number, height: number) {
-    this._width = width;
-    this._height = height;
+    this._width = SvgValue.positive(width, 'canvas width');
+    this._height = SvgValue.positive(height, 'canvas height');
   }
 
   get width(): number { return this._width; }
@@ -18,8 +19,8 @@ export class SvgDocument {
   get children(): ReadonlyArray<Shape> { return this._children; }
   get filePath(): string | null { return this._filePath; }
 
-  set width(w: number) { this._width = w; }
-  set height(h: number) { this._height = h; }
+  set width(w: number) { this._width = SvgValue.positive(w, 'canvas width'); }
+  set height(h: number) { this._height = SvgValue.positive(h, 'canvas height'); }
   set filePath(p: string | null) { this._filePath = p; }
 
   hasId(id: string): boolean {
@@ -31,12 +32,16 @@ export class SvgDocument {
   }
 
   registerShape(shape: Shape): void {
-    this._shapesById.set(shape.id, shape);
-    if (shape.isGroup()) {
-      for (const child of shape.allDescendants()) {
-        this._shapesById.set(child.id, child);
+    const nodes = [shape, ...(shape.isGroup() ? shape.allDescendants() : [])];
+    const seen = new Set<string>();
+    for (const node of nodes) {
+      const existing = this._shapesById.get(node.id);
+      if (seen.has(node.id) || (existing && existing !== node)) {
+        throw new Error(`id already exists: ${node.id}`);
       }
+      seen.add(node.id);
     }
+    for (const node of nodes) this._shapesById.set(node.id, node);
   }
 
   unregisterShape(shape: Shape): void {
@@ -49,15 +54,16 @@ export class SvgDocument {
   }
 
   addChild(shape: Shape): void {
-    this._children.push(shape);
-    shape.parent = null;
-    this.registerShape(shape);
+    this.addChildAt(shape, this._children.length);
   }
 
   addChildAt(shape: Shape, index: number): void {
+    if (shape.parent || this._children.includes(shape)) {
+      throw new Error(`shape already has a parent: ${shape.id}`);
+    }
+    this.registerShape(shape);
     this._children.splice(index, 0, shape);
     shape.parent = null;
-    this.registerShape(shape);
   }
 
   removeChild(shape: Shape): number {
@@ -95,6 +101,10 @@ export class SvgDocument {
 
   isTopLevel(shape: Shape): boolean {
     return this._children.includes(shape);
+  }
+
+  orderedShapes(): Shape[] {
+    return this._children.flatMap(shape => [shape, ...(shape.isGroup() ? shape.allDescendants() : [])]);
   }
 
   countElements(): number {

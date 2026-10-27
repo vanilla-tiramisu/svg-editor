@@ -1,18 +1,16 @@
 import * as fs from 'fs';
 import { DOMParser } from '@xmldom/xmldom';
+import { SaxesParser } from 'saxes';
 import { SvgDocument } from '../model/SvgDocument';
 import { Shape } from '../model/Shape';
-import { Rect } from '../model/Rect';
-import { Circle } from '../model/Circle';
-import { Ellipse } from '../model/Ellipse';
-import { Line } from '../model/Line';
-import { TextShape } from '../model/TextShape';
-import { Group } from '../model/Group';
+import { ShapeFactory } from '../model/ShapeFactory';
+import { SvgValue } from '../model/SvgValue';
 
 export class SvgReader {
   private warnings: string[] = [];
   private idCounter: Map<string, number> = new Map();
   private usedIds: Set<string> = new Set();
+  private factory = new ShapeFactory();
 
   read(filePath: string): { doc: SvgDocument; warnings: string[] } | string {
     let content: string;
@@ -26,54 +24,74 @@ export class SvgReader {
     this.idCounter = new Map();
     this.usedIds = new Set();
 
-    const parser = new DOMParser();
-    const xmlDoc = parser.parseFromString(content, 'text/xml');
-    const svgEl = xmlDoc.documentElement;
+    try {
+      SvgValue.text(content);
+      const validator = new SaxesParser({ xmlns: true });
+      validator.on('error', error => { throw error; });
+      validator.on('doctype', () => { throw new Error('DOCTYPE is not supported'); });
+      validator.write(content).close();
+      let malformed = false;
+      const parser = new DOMParser({
+        errorHandler: {
+          warning: () => { malformed = true; },
+          error: () => { malformed = true; },
+          fatalError: () => { malformed = true; },
+        },
+      });
+      const xmlDoc = parser.parseFromString(content, 'text/xml');
+      const svgEl = xmlDoc?.documentElement;
+      if (malformed || !svgEl || svgEl.localName !== 'svg' || !this.isSvgNamespace(svgEl)) {
+        throw new Error('malformed XML or missing SVG root');
+      }
+      if (xmlDoc.doctype) throw new Error('DOCTYPE is not supported');
+      for (let i = 0; i < xmlDoc.childNodes.length; i++) {
+        const node = xmlDoc.childNodes[i];
+        if (node.nodeType === 3 && node.nodeValue?.trim()) throw new Error('text outside SVG root');
+      }
 
-    if (!svgEl || svgEl.tagName !== 'svg') {
-      return `error: invalid SVG file: ${filePath}`;
-    }
-
-    const width = Number(svgEl.getAttribute('width') || '800');
-    const height = Number(svgEl.getAttribute('height') || '600');
-    const doc = new SvgDocument(width, height);
-    doc.filePath = filePath;
-
-    this.collectExistingIds(svgEl);
-
-    const children = svgEl.childNodes;
-    for (let i = 0; i < children.length; i++) {
-      const node = children[i];
-      if (node.nodeType === 1) {
-        const shape = this.parseElement(node as Element);
-        if (shape) {
-          doc.addChild(shape);
+      const width = SvgValue.positive(svgEl.hasAttribute('width') ? svgEl.getAttribute('width')! : 800, 'canvas width');
+      const height = SvgValue.positive(svgEl.hasAttribute('height') ? svgEl.getAttribute('height')! : 600, 'canvas height');
+      const doc = new SvgDocument(width, height);
+      doc.filePath = filePath;
+      this.collectExistingIds(svgEl);
+      this.warnAttributes(svgEl, ['width', 'height', 'viewBox']);
+      if (svgEl.hasAttribute('viewBox')) {
+        const parts = svgEl.getAttribute('viewBox')!.trim().split(/[\s,]+/).map(Number);
+        if (parts.length !== 4 || parts.some((value, index) => value !== [0, 0, width, height][index])) {
+          this.warnings.push('warning: ignored unsupported viewBox; using canvas dimensions');
         }
       }
+      for (const shape of this.parseChildren(svgEl, 0)) doc.addChild(shape);
+      return { doc, warnings: this.warnings };
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      return `error: invalid SVG file: ${filePath}: ${reason}`.replace(/[\r\n]+/g, ' ');
     }
-
-    return { doc, warnings: this.warnings };
   }
 
-  private collectExistingIds(el: Element): void {
+  private collectExistingIds(el: Element, depth: number = 0): void {
+    if (depth > 256) throw new Error('SVG nesting exceeds 256 levels');
     const id = el.getAttribute('id');
-    if (id) this.usedIds.add(id);
+    if (el.hasAttribute('id')) {
+      SvgValue.id(id!);
+      if (this.usedIds.has(id!)) throw new Error(`id already exists: ${id}`);
+      this.usedIds.add(id!);
+    }
     const children = el.childNodes;
     for (let i = 0; i < children.length; i++) {
       if (children[i].nodeType === 1) {
-        this.collectExistingIds(children[i] as Element);
+        this.collectExistingIds(children[i] as Element, depth + 1);
       }
     }
   }
 
   private autoId(tagName: string): string {
-    const count = (this.idCounter.get(tagName) || 0) + 1;
-    this.idCounter.set(tagName, count);
+    let count = (this.idCounter.get(tagName) || 0) + 1;
     let id = `${tagName}${count}`;
     while (this.usedIds.has(id)) {
-      this.idCounter.set(tagName, count + 1);
-      id = `${tagName}${this.idCounter.get(tagName)}`;
+      id = `${tagName}${++count}`;
     }
+    this.idCounter.set(tagName, count);
     this.usedIds.add(id);
     return id;
   }
@@ -81,103 +99,73 @@ export class SvgReader {
   private ensureId(el: Element): string {
     let id = el.getAttribute('id');
     if (!id) {
-      id = this.autoId(el.tagName);
+      id = this.autoId(el.localName);
       this.warnings.push(`warning: assigned id ${id} to unnamed <${el.tagName}>`);
     }
     return id;
   }
 
-  private parseElement(el: Element): Shape | null {
-    const tag = el.tagName;
-    const id = this.ensureId(el);
+  private isSvgNamespace(el: Element): boolean {
+    return !el.namespaceURI || el.namespaceURI === 'http://www.w3.org/2000/svg';
+  }
 
-    switch (tag) {
-      case 'rect': return this.parseRect(el, id);
-      case 'circle': return this.parseCircle(el, id);
-      case 'ellipse': return this.parseEllipse(el, id);
-      case 'line': return this.parseLine(el, id);
-      case 'text': return this.parseText(el, id);
-      case 'g': return this.parseGroup(el, id);
-      default: return null;
+  private parseElement(el: Element, depth: number): Shape | null {
+    if (!this.isSvgNamespace(el)) {
+      this.warnings.push(`warning: skipped unsupported element <${el.tagName}> and its subtree`);
+      return null;
     }
-  }
-
-  private parseRect(el: Element, id: string): Rect {
-    const x = Number(el.getAttribute('x') || '0');
-    const y = Number(el.getAttribute('y') || '0');
-    const w = Number(el.getAttribute('width') || '0');
-    const h = Number(el.getAttribute('height') || '0');
-    const fill = el.getAttribute('fill') || undefined;
-    const rect = new Rect(id, x, y, w, h, fill);
-    this.applyCommonAttrs(el, rect);
-    return rect;
-  }
-
-  private parseCircle(el: Element, id: string): Circle {
-    const cx = Number(el.getAttribute('cx') || '0');
-    const cy = Number(el.getAttribute('cy') || '0');
-    const r = Number(el.getAttribute('r') || '0');
-    const fill = el.getAttribute('fill') || undefined;
-    const circle = new Circle(id, cx, cy, r, fill);
-    this.applyCommonAttrs(el, circle);
-    return circle;
-  }
-
-  private parseEllipse(el: Element, id: string): Ellipse {
-    const cx = Number(el.getAttribute('cx') || '0');
-    const cy = Number(el.getAttribute('cy') || '0');
-    const rx = Number(el.getAttribute('rx') || '0');
-    const ry = Number(el.getAttribute('ry') || '0');
-    const fill = el.getAttribute('fill') || undefined;
-    const ellipse = new Ellipse(id, cx, cy, rx, ry, fill);
-    this.applyCommonAttrs(el, ellipse);
-    return ellipse;
-  }
-
-  private parseLine(el: Element, id: string): Line {
-    const x1 = Number(el.getAttribute('x1') || '0');
-    const y1 = Number(el.getAttribute('y1') || '0');
-    const x2 = Number(el.getAttribute('x2') || '0');
-    const y2 = Number(el.getAttribute('y2') || '0');
-    const stroke = el.getAttribute('stroke') || undefined;
-    const line = new Line(id, x1, y1, x2, y2, stroke);
-    this.applyCommonAttrs(el, line);
-    return line;
-  }
-
-  private parseText(el: Element, id: string): TextShape {
-    const x = Number(el.getAttribute('x') || '0');
-    const y = Number(el.getAttribute('y') || '0');
-    const content = el.textContent || '';
-    const text = new TextShape(id, x, y, content);
-    const fill = el.getAttribute('fill') || undefined;
-    if (fill) text.setAttribute('fill', fill);
-    this.applyCommonAttrs(el, text);
-    return text;
-  }
-
-  private parseGroup(el: Element, id: string): Group {
-    const group = new Group(id);
-    const fill = el.getAttribute('fill') || undefined;
-    if (fill) group.setAttribute('fill', fill);
-    this.applyCommonAttrs(el, group);
-
-    const children = el.childNodes;
-    for (let i = 0; i < children.length; i++) {
-      if (children[i].nodeType === 1) {
-        const child = this.parseElement(children[i] as Element);
-        if (child) {
-          group.addChild(child);
+    let shape: Shape;
+    try {
+      shape = this.factory.create(el.localName, this.ensureId(el));
+    } catch (error) {
+      if (!(error instanceof Error) || !error.message.startsWith('unknown shape type:')) throw error;
+      this.warnings.push(`warning: skipped unsupported element <${el.tagName}> and its subtree`);
+      return null;
+    }
+    const attributes = shape.allowedAttributes().filter(name => name !== 'text');
+    this.warnAttributes(el, ['id', ...attributes]);
+    for (const name of attributes) {
+      if (el.hasAttribute(name)) shape.setAttribute(name, el.getAttribute(name)!);
+    }
+    if (shape.isGroup()) {
+      for (const child of this.parseChildren(el, depth)) shape.addChild(child);
+    } else {
+      for (let i = 0; i < el.childNodes.length; i++) {
+        if (el.childNodes[i].nodeType === 1) {
+          throw new Error(`unsupported child element in <${el.tagName}>`);
         }
       }
+      if (shape.allowedAttributes().includes('text')) {
+        shape.setAttribute('text', el.textContent || '');
+      } else if (el.textContent?.trim()) {
+        throw new Error(`unexpected text in <${el.tagName}>`);
+      }
     }
-    return group;
+    shape.validate();
+    return shape;
   }
 
-  private applyCommonAttrs(el: Element, shape: Shape): void {
-    const stroke = el.getAttribute('stroke');
-    if (stroke) shape.setAttribute('stroke', stroke);
-    const strokeWidth = el.getAttribute('stroke-width');
-    if (strokeWidth) shape.setAttribute('stroke-width', strokeWidth);
+  private parseChildren(el: Element, depth: number): Shape[] {
+    const shapes: Shape[] = [];
+    for (let i = 0; i < el.childNodes.length; i++) {
+      const node = el.childNodes[i];
+      if (node.nodeType === 1) {
+        const shape = this.parseElement(node as Element, depth + 1);
+        if (shape) shapes.push(shape);
+      } else if ((node.nodeType === 3 || node.nodeType === 4) && node.nodeValue?.trim()) {
+        throw new Error(`unexpected text in <${el.tagName}>`);
+      }
+    }
+    return shapes;
+  }
+
+  private warnAttributes(el: Element, allowed: string[]): void {
+    for (let i = 0; i < el.attributes.length; i++) {
+      const name = el.attributes[i].name;
+      if (name === 'xmlns' || name.startsWith('xmlns:')) continue;
+      if (!allowed.includes(name)) {
+        this.warnings.push(`warning: ignored unsupported attribute ${name} on <${el.tagName}>`);
+      }
+    }
   }
 }

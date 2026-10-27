@@ -22,8 +22,21 @@ export class GroupCommand implements Command {
   }
 
   execute(): string {
-    for (const id of this.shapeIds) {
-      const shape = this.doc.findById(id)!;
+    const selected = new Set(this.shapeIds);
+    if (selected.size !== this.shapeIds.length) throw new Error('duplicate id in group command');
+    if (this.doc.hasId(this.group.id)) throw new Error(`id already exists: ${this.group.id}`);
+    for (const id of selected) {
+      if (!this.doc.hasId(id)) throw new Error(`no such shape: ${id}`);
+    }
+    const shapes = this.doc.orderedShapes().filter(shape => selected.has(shape.id));
+    for (const shape of shapes) {
+      if (shape.isGroup() && shape.allDescendants().some(child => selected.has(child.id))) {
+        throw new Error(`cannot group a container into its own descendant: ${shape.id}`);
+      }
+    }
+
+    this.origins = [];
+    for (const shape of shapes) {
       const { parent, index } = this.doc.removeFromParent(shape);
       this.origins.push({ shape, parent, index });
     }
